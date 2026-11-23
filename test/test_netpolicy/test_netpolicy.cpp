@@ -267,6 +267,23 @@ void test_roam_scans_only_while_weak()
   TEST_ASSERT_FALSE(s.run(10 * MIN) & NET_ROAM_SCAN);
 }
 
+void test_roam_can_be_switched_off()
+{
+  Sim s(true, false, true);
+  s.in.roam = false;
+  s.in.wifiUp = true;
+  s.in.rssi = -85;
+  s.in.mqttUp = true;
+  TEST_ASSERT_FALSE(s.run(30 * MIN) & NET_ROAM_SCAN);
+
+  s.in.mqttUp = false;
+  unsigned long down = s.t, at = 0;
+  uint8_t seen = s.run(15 * MIN + S, NET_REBOOT, &at);
+  TEST_ASSERT_FALSE(seen & NET_CONNECT_WIFI); // a broker outage no longer tears the WiFi link down
+  TEST_ASSERT_TRUE(seen & NET_REBOOT);        // but a broker that stays away still restarts the board
+  TEST_ASSERT_EQUAL_UINT32(down + 15 * MIN, at);
+}
+
 void test_roam_pick()
 {
   const uint8_t current[6] = {0x20, 0x23, 0x51, 0x97, 0x82, 0x12};
@@ -324,6 +341,7 @@ int main(int, char **)
   RUN_TEST(test_wifi_backs_up_ethernet);
   RUN_TEST(test_ethernet_board_without_ethernet_at_boot_falls_back_to_wifi);
   RUN_TEST(test_roam_scans_only_while_weak);
+  RUN_TEST(test_roam_can_be_switched_off);
   RUN_TEST(test_roam_pick);
   RUN_TEST(test_request_same_site);
   return UNITY_END();

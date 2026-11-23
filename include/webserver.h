@@ -1486,7 +1486,7 @@ void webLoop()
                   next->sg1Pin != config.sg1Pin || next->sg2Pin != config.sg2Pin || next->safetyPin != config.safetyPin ||
                   strcmp(next->hostname, config.hostname) != 0 || strcmp(next->adminPwd, config.adminPwd) != 0;
     if (baseChanged)
-      mqttRetireDiscovery(); // the entities of the old base topic leave Home Assistant
+      mqttRetireRequested = true; // the MQTT task retires the old topics before it applies the new base
     configLock();
     configKeepRuntime(*next, config); // what the heat pump task wrote since the form's copy was made
     config = *next;

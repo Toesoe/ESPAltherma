@@ -189,8 +189,6 @@ void handleScreen(){}
 
 void extraLoop()
 {
-  LOOP_STAGE("MQTT receive");
-  client.loop();
   LOOP_STAGE("ArduinoOTA");
   ArduinoOTA.handle();
   while (busy)
@@ -1637,7 +1635,7 @@ void setup()
   client.setCallback(callback);
   heapMark("MQTT client");
 
-  //Nothing blocks: WiFi, the setup access point and MQTT are handled by netLoop()
+  // Nothing blocks here: WiFi and the setup access point are handled by netLoop(), MQTT by its own task.
   netBegin();
   heapMark("network started");
   webBegin();
@@ -1658,6 +1656,8 @@ void setup()
   xTaskCreate(hpTask, "heatpump", 6144, nullptr, 1, nullptr); // it uses 2.5 KB (/api/heap): the rest is heap the HTTPS connections need
   watchdogBegin();
   heapMark("heat pump task");
+  mqttTaskBegin(); // after this, only the MQTT task touches client
+  heapMark("MQTT task");
   mqttSerial.print("ESPAltherma started!");
   mqttSerial.printf(" Last reset: %s%s%s\n", resetReasonName(), restartCause[0] ? ": " : "", restartCause);
 }
@@ -1685,26 +1685,19 @@ void loop()
     publishValues();
     heapMark("first values published");
   }
-  if (surveyReady && client.connected())
+  if (surveyReady && mqttConnectedCache)
   {
     LOOP_STAGE("publish survey");
     publishSurvey();
     heapMark("survey published");
   }
-  if (discoveryDirty && client.connected())
-  {
-    discoveryDirty = false;
-    LOOP_STAGE("HA discovery");
-    publishHomeAssistantDeviceDiscovery();
-    heapMark("Home Assistant discovery");
-  }
-  if (fwUpdate.dirty && client.connected())
+  if (fwUpdate.dirty && mqttConnectedCache)
   {
     fwUpdate.dirty = false;
     LOOP_STAGE("update entity");
     publishUpdateEntity();
   }
-  if ((dhwControl.changed || lwtControl.changed || coolControl.changed || addControl.changed || limitControl.changed) && client.connected())
+  if ((dhwControl.changed || lwtControl.changed || coolControl.changed || addControl.changed || limitControl.changed) && mqttConnectedCache)
   {
     LOOP_STAGE("target controls state");
     if (dhwControl.changed)

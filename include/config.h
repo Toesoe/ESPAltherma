@@ -30,6 +30,7 @@ struct AppConfig
   char wifiSsid[33];
   char wifiPwd[65];
   bool staticIp;
+  bool wifiRoam; // scan for a stronger access point, and reconnect when the broker stays unreachable
   uint32_t ip, gateway, subnet, dns1, dns2;
   char hostname[33];
   char ntpServer[65]; // time server (empty: pool.ntp.org and time.google.com), for a network without Internet
@@ -165,6 +166,7 @@ void configDefaults(AppConfig &c)
   memset(&c, 0, sizeof(c));
   strlcpy(c.hostname, "ESPAltherma", sizeof(c.hostname));
   c.layoutCheck = true;
+  c.wifiRoam = true;
   c.outdoorAux = false;
   c.indoorAux = false;
   c.mqttPort = 1883;
@@ -228,6 +230,7 @@ void configToJson(const AppConfig &c, JsonDocument &doc, bool includeSecrets, bo
   if (includeSecrets)
     wifi["pwd"] = c.wifiPwd;
   wifi["static"] = c.staticIp;
+  wifi["roam"] = c.wifiRoam;
   wifi["ip"] = ipToString(c.ip);
   wifi["gateway"] = ipToString(c.gateway);
   wifi["subnet"] = ipToString(c.subnet);
@@ -388,6 +391,7 @@ void configFromJson(AppConfig &c, JsonVariantConst src, bool includeRuntime = fa
   readStr(wifi["ssid"], c.wifiSsid, sizeof(c.wifiSsid));
   readStr(wifi["pwd"], c.wifiPwd, sizeof(c.wifiPwd));
   readNum(wifi["static"], c.staticIp);
+  readNum(wifi["roam"], c.wifiRoam);
   readIp(wifi["ip"], c.ip);
   readIp(wifi["gateway"], c.gateway);
   readIp(wifi["subnet"], c.subnet);

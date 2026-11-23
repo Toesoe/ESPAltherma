@@ -10,11 +10,13 @@
 #include "restart.h"
 #include "stage.h"
 
-#define WATCHDOG_LOOP_MS 90000UL          // longest legitimate stall: an MQTT or TLS connection attempt, a few seconds
+#define WATCHDOG_LOOP_MS 90000UL          // longest legitimate stall: a web request, an OTA write, a long survey
 #define WATCHDOG_HP_MS (5UL * 60 * 1000) // the heat pump task beats between registries and while it waits
+#define WATCHDOG_MQTT_MS (5UL * 60 * 1000) // the MQTT task beats between a connect, a discovery and a publish
 
 volatile unsigned long watchdogLoopBeat = 0;
 volatile unsigned long watchdogHpBeat = 0;
+volatile unsigned long watchdogMqttBeat = 0;
 volatile bool watchdogPaused = false; // ArduinoOTA upload: the loop is inside ArduinoOTA.handle()
 
 // A stall of the main loop shorter than the watchdog's limit is still worth a line in the event history: the MQTT
@@ -32,6 +34,7 @@ static void watchdogCheck(void *)
   // underflows now - beat to ~49 days and restarts a healthy board
   unsigned long loopBeat = watchdogLoopBeat;
   unsigned long hpBeat = watchdogHpBeat;
+  unsigned long mqttBeat = watchdogMqttBeat;
   unsigned long now = millis();
   if (now - loopBeat > WATCHDOG_STALL_MS && watchdogStallSince == 0)
   {
@@ -44,6 +47,8 @@ static void watchdogCheck(void *)
     snprintf(cause, sizeof(cause), "Watchdog: the main loop stopped (in %s)", (const char *)loopStage);
   else if (hpBeat != 0 && now - hpBeat > WATCHDOG_HP_MS)
     snprintf(cause, sizeof(cause), "Watchdog: the heat pump task stopped (in %s)", (const char *)hpStage);
+  else if (mqttBeat != 0 && now - mqttBeat > WATCHDOG_MQTT_MS)
+    snprintf(cause, sizeof(cause), "Watchdog: the MQTT task stopped (in %s)", (const char *)mqttStage);
   if (cause[0])
   { // not restart_board(): no NVS here, the stuck task may hold it. The RTC memory survives the restart.
     Serial.println(cause);
@@ -75,5 +80,6 @@ inline void watchdogLoop()
   watchdogLoopBeat = now;
 }
 inline void watchdogHp() { watchdogHpBeat = millis(); }
+inline void watchdogMqtt() { watchdogMqttBeat = millis(); }
 
 #endif

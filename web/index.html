@@ -440,6 +440,8 @@ td.nowrap{white-space:nowrap;color:var(--ink2)}
    <p class="sub">The language also names the Home Assistant sensors (in English when automatic).</p>
    <p class="sub">With an admin password, changing the settings or the firmware asks for the user name "admin" and this password.</p>
    <label class="chk"><input type="checkbox" id="sStatic">Static IP address</label>
+   <label class="chk"><input type="checkbox" id="sRoam">Scan for a stronger access point</label>
+   <p class="sub">Off: the board stays on the access point it joined and never scans; it still reconnects when the WiFi link itself drops. On: it may move to a stronger access point, and reconnects when the broker stays unreachable.</p>
    <div class="row" id="sStaticBox"><label class="f"><span class="k">IP</span><input type="text" id="sIp"></label><label class="f"><span class="k">Gateway</span><input type="text" id="sGw"></label><label class="f"><span class="k">Subnet mask</span><input type="text" id="sMask"></label><label class="f"><span class="k">DNS</span><input type="text" id="sDns1"></label></div></div>
  </div>
  <div class="acts"><button class="p" id="sSave">Save settings</button><span class="msg" id="sMsg" translate="no"></span></div>
@@ -1315,6 +1317,7 @@ function fillSettings() {
   $('#sHost').value = cfg.hostname; $('#sNtp').value = cfg.ntp || ''; $('#sAdminState').textContent = cfg.admin.has_pwd ? t('(set)') : t('(none)'); $('#sAdminClearL').style.display = cfg.admin.has_pwd ? '' : 'none'; $('#sAdminClear').checked = false;
   fillLangs();
   $('#sStatic').checked = w.static; $('#sIp').value = w.ip; $('#sGw').value = w.gateway; $('#sMask').value = w.subnet; $('#sDns1').value = w.dns1;
+  $('#sRoam').checked = w.roam !== false;
   $('#sStaticBox').hidden = !w.static;
 }
 $('#sStatic').onchange = e => $('#sStaticBox').hidden = !e.target.checked;
@@ -1335,7 +1338,7 @@ $('#sSave').onclick = async () => {
     hostname: $('#sHost').value.trim() || 'ESPAltherma',
     ntp: $('#sNtp').value.trim(),
     lang: $('#sLang').value,
-    wifi: {static: $('#sStatic').checked, ip: $('#sIp').value, gateway: $('#sGw').value, subnet: $('#sMask').value, dns1: $('#sDns1').value},
+    wifi: {static: $('#sStatic').checked, roam: $('#sRoam').checked, ip: $('#sIp').value, gateway: $('#sGw').value, subnet: $('#sMask').value, dns1: $('#sDns1').value},
   };
   if ($('#sAdminClear').checked) d.admin = {pwd: ''}; // an empty password = none
   else if ($('#sAdmin').value) d.admin = {pwd: $('#sAdmin').value};

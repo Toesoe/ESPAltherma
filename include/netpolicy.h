@@ -12,6 +12,8 @@
 //    wrong credentials) and nobody on the setup access point: reboot.
 //  - Online but the MQTT broker unreachable: over WiFi, reconnect to the strongest access point after 2 minutes
 //    (the link may be stuck on a distant one), then every 5 minutes; reboot after 15 minutes.
+//  - The owner may turn the scans off (Settings: "Scan for a stronger access point"): the device then stays on the
+//    access point it joined, and only the core's reconnect and a link loss move it. The broker still gets the reboot.
 //  - Ethernet, when the board has it, is preferred: WiFi (if configured) is only used while Ethernet is down.
 //  - Several access points with the same SSID: while the signal is weak, scan for one at least 8dB stronger.
 
@@ -58,6 +60,7 @@ struct NetInputs
   int apClients = 0;
   bool mqttConfigured = false;
   bool mqttUp = false;
+  bool roam = true; // scan for a stronger access point, and rescan when the broker stays unreachable
 };
 
 struct NetPolicy
@@ -179,7 +182,7 @@ struct NetPolicy
         reason = "MQTT broker unreachable for 15 minutes";
         return act | NET_REBOOT;
       }
-      if (in.wifiUp && !in.ethUp && now - mqttDownSince >= NET_MQTT_RESCAN_MS &&
+      if (in.roam && in.wifiUp && !in.ethUp && now - mqttDownSince >= NET_MQTT_RESCAN_MS &&
           (!mqttRescanned || now - lastMqttRescan >= NET_MQTT_RESCAN_EVERY_MS))
       {
         mqttRescanned = true;
@@ -191,7 +194,7 @@ struct NetPolicy
     }
 
     // Weak signal: is a stronger access point of the same SSID around?
-    if (in.wifiUp && !in.ethUp && !in.apActive && in.rssi != 0 && in.rssi < NET_ROAM_RSSI && !(act & (NET_CONNECT_WIFI | NET_STOP_WIFI)))
+    if (in.roam && in.wifiUp && !in.ethUp && !in.apActive && in.rssi != 0 && in.rssi < NET_ROAM_RSSI && !(act & (NET_CONNECT_WIFI | NET_STOP_WIFI)))
     {
       const unsigned long every = in.rssi < NET_ROAM_WEAK_RSSI ? NET_ROAM_WEAK_EVERY_MS : NET_ROAM_EVERY_MS;
       if (now - lastRoamScan >= every)

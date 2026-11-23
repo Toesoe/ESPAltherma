@@ -22,7 +22,6 @@
 #include "configservices.h"
 
 #define AP_PASSWORD "espaltherma" // WPA2 key of the setup access point (documented, shown on screen/serial)
-#define MQTT_RETRY_MS 5000UL
 #define ROAM_SCAN_MAX 16
 
 // Defined in main.cpp
@@ -34,10 +33,6 @@ bool apActive = false;
 char apSsid[33] = "";
 bool netWasOnline = false;
 bool networkServicesStarted = false;
-unsigned long mqttLastAttempt = 0;
-// MQTT status for the web interface: PubSubClient must only be used from the main loop
-volatile bool mqttConnectedCache = false;
-volatile int mqttStateCache = MQTT_DISCONNECTED;
 volatile bool ethUp = false;
 
 // Last access point joined and last disconnection: status page and restart cause
@@ -415,29 +410,6 @@ void startNetworkServices()
   heapMark("mDNS, ArduinoOTA, time");
 }
 
-void mqttLoop()
-{
-  if (mqttWriteFailed)
-  { // not client.disconnect(): its DISCONNECT packet would wait 10s more
-    mqttWriteFailed = false;
-    if (client.connected())
-    {
-      mqttNet->stop();
-      netHistory(true, "MQTT: the broker stopped taking data, reconnecting");
-    }
-  }
-  if (!config.mqttServer[0] || config.mqttOff || client.connected())
-    return;
-  unsigned long now = millis();
-  if (mqttLastAttempt != 0 && now - mqttLastAttempt < MQTT_RETRY_MS)
-    return;
-  mqttLastAttempt = now;
-  LOOP_STAGE("MQTT connect");
-  mqttConnectOnce(); // netPolicy reboots when the broker stays unreachable
-  if (client.connected())
-    heapMark("MQTT connected");
-}
-
 // MQTT state changes for the event history, at most one every 5 minutes (a flapping broker would flood it)
 bool mqttHistoryUp = false;
 unsigned long mqttHistoryAt = 0;
@@ -446,7 +418,7 @@ bool mqttLastUp = false;
 
 static void mqttHistory(unsigned long now)
 {
-  bool up = client.connected();
+  bool up = mqttConnectedCache; // the MQTT task owns the client and updates this
   if (up != mqttLastUp)
   {
     mqttLastUp = up;
@@ -460,20 +432,18 @@ static void mqttHistory(unsigned long now)
   if (up)
     eventAddf("MQTT connected to %s%s", config.mqttServer, changes);
   else
-    eventAddf("MQTT lost, state %d%s", client.state(), changes);
+    eventAddf("MQTT lost, state %d%s", (int)mqttStateCache, changes);
   mqttHistoryUp = up;
   mqttHistoryAt = now;
   mqttHistoryChanges = 0;
 }
 
-// Forces an immediate MQTT reconnection, eg. after a configuration change.
+// Asks the MQTT task to apply new settings and reconnect. Called from the settings application, main loop only.
 void mqttReconnectNow()
 {
-  if (config.mqttOff && client.connected()) // leaving for good: a clean disconnect does not fire the will
-    client.publish(mqttTopics.lwt, "Offline", true);
-  client.disconnect();
-  setupMqttClient();
-  mqttLastAttempt = 0;
+  mqttReconfigureRequested = true;
+  if (mqttTaskHandle != nullptr)
+    xTaskNotifyGive(mqttTaskHandle);
 }
 
 // Scans in the background for a stronger access point of our SSID.
@@ -509,7 +479,7 @@ static void roamScanLoop()
   }
   WiFi.scanDelete();
   roamScanning = false; // until now, the web interface leaves the results alone
-  if (WiFi.status() != WL_CONNECTED)
+  if (WiFi.status() != WL_CONNECTED || !config.wifiRoam)
     return;
   int current = WiFi.RSSI();
   int pick = netRoamPick(aps, count, WiFi.BSSID(), current);
@@ -538,8 +508,7 @@ static void netRestart(const char *reason)
   else
     strlcpy(cause, reason, sizeof(cause));
   mqttSerial.println(cause);
-  mqttSerial.drain();
-  delay(200); // lets the log reach MQTT
+  delay(200); // lets the log reach the console; the MQTT task may be reconnecting
   restart_board(cause);
 }
 
@@ -586,7 +555,8 @@ void netLoop()
   in.apActive = apActive;
   in.apClients = apActive ? WiFi.softAPgetStationNum() : 0;
   in.mqttConfigured = config.mqttServer[0] != 0 && !config.mqttOff;
-  in.mqttUp = client.connected();
+  in.mqttUp = mqttConnectedCache;
+  in.roam = config.wifiRoam;
   uint8_t act = netPolicy.step(in);
   if (act & NET_REBOOT)
     netRestart(netPolicy.reason);
@@ -615,10 +585,6 @@ void netLoop()
 #endif
   if (apActive)
     dnsServer.processNextRequest();
-  if (online)
-    mqttLoop();
-  mqttConnectedCache = client.connected();
-  mqttStateCache = client.state();
   mqttHistory(now);
 }
 
