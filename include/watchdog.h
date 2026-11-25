@@ -48,7 +48,9 @@ static void watchdogCheck(void *)
   else if (hpBeat != 0 && now - hpBeat > WATCHDOG_HP_MS)
     snprintf(cause, sizeof(cause), "Watchdog: the heat pump task stopped (in %s)", (const char *)hpStage);
   else if (mqttBeat != 0 && now - mqttBeat > WATCHDOG_MQTT_MS)
-    snprintf(cause, sizeof(cause), "Watchdog: the MQTT task stopped (in %s)", (const char *)mqttStage);
+    {
+        snprintf(cause, sizeof(cause), "Watchdog: the MQTT task stopped (in %s)", (const char *)mqttStage);
+    }
   if (cause[0])
   { // not restart_board(): no NVS here, the stuck task may hold it. The RTC memory survives the restart.
     Serial.println(cause);

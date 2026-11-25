@@ -25,12 +25,20 @@ private:
     char _topic[64];
     SemaphoreHandle_t _topicMutex = xSemaphoreCreateMutex(); // setupMqttClient() may change it from the MQTT task
     LogRing _ring;
+
 public:
-    inline void begin(PubSubClient* client,const char* topic){
-    _client=client;
-    if (_topicMutex) xSemaphoreTake(_topicMutex, portMAX_DELAY);
-    strlcpy(_topic,topic,sizeof(_topic));
-    if (_topicMutex) xSemaphoreGive(_topicMutex);
+    inline void begin(PubSubClient *client, const char *topic)
+    {
+        _client = client;
+        if (_topicMutex)
+        {
+            xSemaphoreTake(_topicMutex, portMAX_DELAY);
+        }
+        strlcpy(_topic, topic, sizeof(_topic));
+        if (_topicMutex)
+        {
+            xSemaphoreGive(_topicMutex);
+        }
     };
 
     inline size_t write(uint8_t){return 0;};
@@ -102,14 +110,26 @@ void MQTTSerial::drain()
         }
         M5.Lcd.print(chunk);
 #endif
-        if (!config.disableLogMessages && !mqttWriteFailed){ // connected over WiFi or Ethernet
-            char topic[64];
-            if (_topicMutex) xSemaphoreTake(_topicMutex, portMAX_DELAY);
+        if (!config.disableLogMessages && !mqttWriteFailed)
+        {
+            // connected over WiFi or Ethernet
+            char topic[64] = {0};
+            if (_topicMutex)
+            {
+                xSemaphoreTake(_topicMutex, portMAX_DELAY);
+            }
+
             memcpy(topic, _topic, sizeof(topic));
-            if (_topicMutex) xSemaphoreGive(_topicMutex);
+
+            if (_topicMutex)
+            {
+                xSemaphoreGive(_topicMutex);
+            }
             mqttPublish(topic, chunk, false); // the message is queued; only the MQTT task touches the client
         }
-        if (onChunk != nullptr){
+
+        if (onChunk != nullptr)
+        {
             onChunk(chunk, len);
         }
     }

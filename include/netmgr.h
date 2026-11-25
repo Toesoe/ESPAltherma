@@ -441,9 +441,11 @@ static void mqttHistory(unsigned long now)
 // Asks the MQTT task to apply new settings and reconnect. Called from the settings application, main loop only.
 void mqttReconnectNow()
 {
-  mqttReconfigureRequested = true;
-  if (mqttTaskHandle != nullptr)
-    xTaskNotifyGive(mqttTaskHandle);
+    mqttReconfigureRequested = true;
+    if (mqttTaskHandle != nullptr)
+    {
+        xTaskNotifyGive(mqttTaskHandle);
+    }
 }
 
 // Scans in the background for a stronger access point of our SSID.

@@ -111,7 +111,7 @@ static bool controlGone(const CurveControl &c)
   return !controlEnabled(c) || c.status == CONTROL_UNSUPPORTED || c.status == CONTROL_NOT_CURVE_MODE;
 }
 
-// One buffer for the discovery and control messages, which are built and published one after the other in the main
+// One buffer for the discovery messages, which are built and published one after the other in the main
 // loop: each had its own, kept for as long as the firmware runs (1400 + 960 + 720 + 720 + 960 bytes). The longest
 // is the Smart Grid select: 839 bytes with the default base topic, 991 with the longest.
 static char mqttDiscoveryJson[1400];
@@ -141,39 +141,60 @@ static bool mqttPublishDirect(const char *topic, const char *payload, size_t len
   return false;
 }
 
-// Main loop and other tasks: a copy for the MQTT task. False when the broker is not up or the queue is full; the
-// message is then dropped, never waited for.
+// Main loop and other tasks: a copy for the MQTT task. Returns false when the broker is not up or the queue is full;
+// the message is then dropped, never waited for.
 static bool mqttEnqueuePublish(const char *topic, const char *payload, bool retained)
 {
-  if (!mqttConnectedCache || mqttJobs == nullptr)
-    return false;
-  MqttJob job = {};
-  if (mqttTopicsMutex)
-    xSemaphoreTake(mqttTopicsMutex, portMAX_DELAY);
-  size_t topicLen = strlen(topic);
-  job.topic = (char *)malloc(topicLen + 1);
-  if (job.topic != nullptr)
-    memcpy(job.topic, topic, topicLen + 1);
-  if (mqttTopicsMutex)
-    xSemaphoreGive(mqttTopicsMutex);
-  if (job.topic == nullptr)
-    return false;
-  job.len = strlen(payload);
-  job.payload = (char *)malloc(job.len + 1);
-  if (job.payload == nullptr)
-  {
-    free(job.topic);
-    return false;
-  }
-  memcpy(job.payload, payload, job.len + 1);
-  job.retained = retained;
-  if (xQueueSend(mqttJobs, &job, 0) != pdTRUE)
-  {
-    free(job.topic);
-    free(job.payload);
-    return false;
-  }
-  return true;
+    if (!mqttConnectedCache || mqttJobs == nullptr)
+    {
+        return false;
+    }
+
+    MqttJob job = {};
+
+    if (mqttTopicsMutex)
+    {
+        xSemaphoreTake(mqttTopicsMutex, portMAX_DELAY);
+    }
+
+    size_t topicLen = strlen(topic);
+    job.topic       = (char *)malloc(topicLen + 1);
+
+    if (job.topic != nullptr)
+    {
+        memcpy(job.topic, topic, topicLen + 1);
+    }
+
+    if (mqttTopicsMutex)
+    {
+        xSemaphoreGive(mqttTopicsMutex);
+    }
+
+    if (job.topic == nullptr)
+    {
+        return false;
+    }
+
+    job.len     = strlen(payload);
+    job.payload = (char *)malloc(job.len + 1);
+
+    if (job.payload == nullptr)
+    {
+        free(job.topic);
+        return false;
+    }
+
+    memcpy(job.payload, payload, job.len + 1);
+    job.retained = retained;
+
+    if (xQueueSend(mqttJobs, &job, 0) != pdTRUE)
+    {
+        free(job.topic);
+        free(job.payload);
+        return false;
+    }
+
+    return true;
 }
 
 // Publishes, and flags a write the broker did not take (stage.h). The task publishes at once; every other task
@@ -232,73 +253,93 @@ void mqttValuesEnd()
 // while the previous message is still queued replaces it. The task publishes it and frees the buffer.
 void mqttValuesHandoff()
 {
-  if (jsonbuff == nullptr)
-    return;
-  if (mqttValuesMutex == nullptr || !mqttConnectedCache)
-  {
-    mqttValuesEnd();
-    return;
-  }
-  size_t len = strlen(jsonbuff);
-  xSemaphoreTake(mqttValuesMutex, portMAX_DELAY);
-  char *old = mqttPendingValues;
-  mqttPendingValues = jsonbuff;
-  mqttPendingLen = len;
-  jsonbuff = nullptr;
-  jsonSize = 0;
-  xSemaphoreGive(mqttValuesMutex);
-  free(old);
-  if (mqttTaskHandle != nullptr)
-    xTaskNotifyGive(mqttTaskHandle);
+    if (jsonbuff == nullptr)
+    {
+        return;
+    }
+
+    if (mqttValuesMutex == nullptr || !mqttConnectedCache)
+    {
+        mqttValuesEnd();
+        return;
+    }
+
+    size_t len = strlen(jsonbuff);
+
+    xSemaphoreTake(mqttValuesMutex, portMAX_DELAY);
+
+    char *old         = mqttPendingValues;
+
+    mqttPendingValues = jsonbuff;
+    mqttPendingLen    = len;
+    jsonbuff          = nullptr;
+    jsonSize          = 0;
+
+    xSemaphoreGive(mqttValuesMutex);
+    free(old);
+
+    if (mqttTaskHandle != nullptr)
+    {
+        xTaskNotifyGive(mqttTaskHandle);
+    }
 }
 
 // Selects the (plain or TLS) network client and the broker, from the configuration, and derives every topic and
 // Home Assistant id from the base topic.
 void setupMqttClient()
 {
-  char base[33], clientId[33];
-  uint16_t port;
-  bool tls;
-  // The settings form may write the configuration while the task runs: take one consistent copy of the MQTT part.
-  configLock();
-  strlcpy(mqttBroker, config.mqttServer, sizeof(mqttBroker));
-  port = config.mqttPort;
-  tls = config.mqttTls;
-  strlcpy(base, config.mqttBase, sizeof(base));
-  strlcpy(clientId, config.mqttClientId, sizeof(clientId));
-  if (mqttTopicsMutex)
-    xSemaphoreTake(mqttTopicsMutex, portMAX_DELAY);
-  mqttTopics.init(base, clientId);
-  if (mqttTopicsMutex)
-    xSemaphoreGive(mqttTopicsMutex);
-  configUnlock();
-  haHostname=config.hostname;
-  haIdPrefix = mqttTopics.id;
-  haDeviceId = mqttTopics.deviceId;
-  haDeviceName = mqttTopics.deviceName;
-  haAttrTopic = mqttTopics.attr;
-  mqttSerial.begin(&client, mqttTopics.log);
-  if (tls)
-  {
-    // Required to establish encrypted connections.
-    // If you want to be more secure here, you can use the CA certificate to allow the wifi client to verify the other party. NOTE: If you use the CA certificate here, then you need to make sure to update it here regulary!
-    secureClient.setInsecure();
-    secureClient.setTimeout(5);
-    client.setClient(secureClient);
-    mqttNet = &secureClient;
-    Serial.printf("Wifi client timeout: %d\n", secureClient.getTimeout());
-  }
-  else
-  {
-    client.setClient(plainClient);
-    mqttNet = &plainClient;
-    Serial.printf("Wifi client timeout: %d\n", plainClient.getTimeout());
-  }
-  client.setBufferSize(MQTT_BUFFER_SIZE);
-  client.setServer(mqttBroker, port);
-  // 60 s instead of the library's 15: a main loop busy for a few seconds (a long publish on a slow link, a web
-  // request) no longer costs the connection
-  client.setKeepAlive(60);
+    char base[33] = {0}, clientId[33] = {0};
+
+    // The settings form may write the configuration while the task runs: take one consistent copy of the MQTT part.
+    configLock();
+
+    strlcpy(mqttBroker, config.mqttServer, sizeof(mqttBroker));
+    strlcpy(base, config.mqttBase, sizeof(base));
+    strlcpy(clientId, config.mqttClientId, sizeof(clientId));
+
+    if (mqttTopicsMutex)
+    {
+        xSemaphoreTake(mqttTopicsMutex, portMAX_DELAY);
+    }
+
+    mqttTopics.init(base, clientId);
+
+    if (mqttTopicsMutex)
+    {
+        xSemaphoreGive(mqttTopicsMutex);
+    }
+
+    configUnlock();
+    haHostname   = config.hostname;
+    haIdPrefix   = mqttTopics.id;
+    haDeviceId   = mqttTopics.deviceId;
+    haDeviceName = mqttTopics.deviceName;
+    haAttrTopic  = mqttTopics.attr;
+    mqttSerial.begin(&client, mqttTopics.log);
+
+    if (config.mqttTls)
+    {
+        // Required to establish encrypted connections.
+        // If you want to be more secure here, you can use the CA certificate to allow the wifi client to verify the
+        // other party. NOTE: If you use the CA certificate here, then you need to make sure to update it here regulary!
+        secureClient.setInsecure();
+        secureClient.setTimeout(5);
+        client.setClient(secureClient);
+        mqttNet = &secureClient;
+        Serial.printf("Wifi client timeout: %d\n", secureClient.getTimeout());
+    }
+    else
+    {
+        client.setClient(plainClient);
+        mqttNet = &plainClient;
+        Serial.printf("Wifi client timeout: %d\n", plainClient.getTimeout());
+    }
+
+    client.setBufferSize(MQTT_BUFFER_SIZE);
+    client.setServer(mqttBroker, config.mqttPort);
+    // 60 s instead of the library's 15: a main loop busy for a few seconds (a long publish on a slow link, a web
+    // request) no longer costs the connection
+    client.setKeepAlive(60);
 }
 
 // Relay states, for the web interface
@@ -463,7 +504,7 @@ void publishSgState()
 bool mqttConnectOnce()
 {
     mqttSerial.print("Attempting MQTT connection...");
-    char user[65], pwd[65];
+    char user[65] = {0}, pwd[65] = {0};
     configLock();
     strlcpy(user, config.mqttUser, sizeof(user));
     strlcpy(pwd, config.mqttPwd, sizeof(pwd));
@@ -474,6 +515,7 @@ bool mqttConnectOnce()
     client.setSocketTimeout(5);
     bool connected = client.connect(mqttTopics.clientId, user, pwd, mqttTopics.lwt, 0, true, "Offline");
     client.setSocketTimeout(15);
+
     if (connected)
     {
       mqttSerial.println("connected!");
@@ -716,7 +758,7 @@ void callbackDebugSerial(byte *payload, unsigned int length)
       startTime = millis();
     }
     
-    // Give the rest of the task and the loop air; the MQTT task cannot re-enter client.loop() here.
+    // Allow other operations during waiting, the MQTT task cannot re-enter client.loop() here.
     delay(1);
   }
   serialUnlock();
@@ -1066,48 +1108,67 @@ void publishHomeAssistantDeviceDiscovery()
 // Drops the queued short messages, freeing their copies.
 static void mqttClearJobs()
 {
-  if (mqttJobs == nullptr)
-    return;
-  MqttJob job;
-  while (xQueueReceive(mqttJobs, &job, 0) == pdTRUE)
-  {
-    free(job.topic);
-    free(job.payload);
-  }
+    if (mqttJobs == nullptr)
+    {
+        return;
+    }
+
+    MqttJob job;
+
+    while (xQueueReceive(mqttJobs, &job, 0) == pdTRUE)
+    {
+        free(job.topic);
+        free(job.payload);
+    }
 }
 
 static void mqttDropPendingValues()
 {
-  if (mqttValuesMutex == nullptr)
-    return;
-  xSemaphoreTake(mqttValuesMutex, portMAX_DELAY);
-  char *buf = mqttPendingValues;
-  mqttPendingValues = nullptr;
-  mqttPendingLen = 0;
-  xSemaphoreGive(mqttValuesMutex);
-  free(buf);
+    if (mqttValuesMutex == nullptr)
+    {
+        return;
+    }
+
+    xSemaphoreTake(mqttValuesMutex, portMAX_DELAY);
+
+    char *buf         = mqttPendingValues;
+    mqttPendingValues = nullptr;
+    mqttPendingLen    = 0;
+
+    xSemaphoreGive(mqttValuesMutex);
+    free(buf);
 }
 
 // The newest values message, if a poll produced one since the last publish.
 static void mqttPublishPendingValues()
 {
-  if (mqttValuesMutex == nullptr)
-    return;
-  char *buf = nullptr;
-  size_t len = 0;
-  xSemaphoreTake(mqttValuesMutex, portMAX_DELAY);
-  if (mqttPendingValues != nullptr)
-  {
-    buf = mqttPendingValues;
-    len = mqttPendingLen;
-    mqttPendingValues = nullptr;
-    mqttPendingLen = 0;
-  }
-  xSemaphoreGive(mqttValuesMutex);
-  if (buf == nullptr)
-    return;
-  mqttPublishDirect(mqttTopics.attr, buf, len, false);
-  free(buf);
+    if (mqttValuesMutex == nullptr)
+    {
+        return;
+    }
+
+    char  *buf = nullptr;
+    size_t len = 0;
+
+    xSemaphoreTake(mqttValuesMutex, portMAX_DELAY);
+
+    if (mqttPendingValues != nullptr)
+    {
+        buf               = mqttPendingValues;
+        len               = mqttPendingLen;
+        mqttPendingValues = nullptr;
+        mqttPendingLen    = 0;
+    }
+
+    xSemaphoreGive(mqttValuesMutex);
+
+    if (buf == nullptr)
+    {
+        return;
+    }
+
+    mqttPublishDirect(mqttTopics.attr, buf, len, false);
+    free(buf);
 }
 
 // Owns PubSubClient. Every call that can wait for the broker (connect, discovery, publish, keepalive) runs here, so
@@ -1115,136 +1176,161 @@ static void mqttPublishPendingValues()
 // delays MQTT: the next poll is published when the task runs again.
 static void mqttTask(void *)
 {
-  for (;;)
-  {
-    watchdogMqtt();
-    if (mqttReconfigureRequested)
+    for (;;)
     {
-      mqttReconfigureRequested = false;
-      if (client.connected())
-      {
-        if (mqttRetireRequested)
-          mqttRetireDiscovery(); // the old base topic, before setupMqttClient() replaces it
-        if (config.mqttOff)
-          client.publish(mqttTopics.lwt, "Offline", true); // leaving for good: a clean disconnect keeps the will
-        client.disconnect();
-      }
-      mqttRetireRequested = false;
-      mqttConnectedCache = false;
-      mqttStateCache = MQTT_DISCONNECTED;
-      mqttWriteFailed = false;
-      mqttLastAttempt = 0;
-      mqttClearJobs();
-      mqttDropPendingValues();
-      setupMqttClient();
-      continue;
-    }
+        watchdogMqtt();
+        if (mqttReconfigureRequested)
+        {
+            mqttReconfigureRequested = false;
+            if (client.connected())
+            {
+                if (mqttRetireRequested)
+                {
+                    // the old base topic, before setupMqttClient() replaces it
+                    mqttRetireDiscovery();
+                }
 
-    if (!netOnline() || !config.mqttServer[0] || config.mqttOff)
-    {
-      if (client.connected())
-        mqttNet->stop(); // the link or the settings are gone: release the socket
-      mqttConnectedCache = false;
-      mqttStateCache = MQTT_DISCONNECTED;
-      mqttClearJobs();
-      mqttDropPendingValues();
-      ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(250));
-      continue;
-    }
+                if (config.mqttOff)
+                {
+                    // leaving for good: a clean disconnect keeps the will
+                    client.publish(mqttTopics.lwt, "Offline", true);
+                }
 
-    if (mqttWriteFailed)
-    { // not client.disconnect(): its DISCONNECT packet would wait 10s more
-      mqttWriteFailed = false;
-      if (client.connected())
-      {
-        mqttNet->stop();
-        mqttSerial.println("MQTT: the broker stopped taking data, reconnecting");
-        eventAddf("MQTT: the broker stopped taking data, reconnecting");
-      }
-      mqttConnectedCache = false;
-      mqttStateCache = MQTT_CONNECTION_LOST;
-      mqttClearJobs();
-      mqttDropPendingValues();
-      continue;
-    }
+                client.disconnect();
+            }
 
-    if (!client.connected())
-    {
-      mqttConnectedCache = false;
-      mqttStateCache = client.state();
-      unsigned long now = millis();
-      if (mqttLastAttempt == 0 || now - mqttLastAttempt >= MQTT_RETRY_MS)
-      {
-        mqttLastAttempt = now;
-        MQTT_STAGE("MQTT connect");
-        mqttConnectOnce(); // may block: the task's whole point
-        mqttLastAttempt = millis(); // a failed attempt is followed by a real 5 s gap
-        mqttConnectedCache = client.connected();
-        mqttStateCache = client.state();
-      }
-      ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(100));
-      continue;
-    }
+            mqttRetireRequested = false;
+            mqttConnectedCache  = false;
+            mqttStateCache      = MQTT_DISCONNECTED;
+            mqttWriteFailed     = false;
+            mqttLastAttempt     = 0;
+            mqttClearJobs();
+            mqttDropPendingValues();
+            setupMqttClient();
+            continue;
+        }
 
-    mqttConnectedCache = true;
-    mqttStateCache = MQTT_CONNECTED;
-    MQTT_STAGE("MQTT receive");
-    client.loop(); // keepalive and incoming commands; callbacks run in this task
-    if (!client.connected())
-    {
-      mqttConnectedCache = false;
-      mqttStateCache = client.state();
-      mqttClearJobs();
-      mqttDropPendingValues();
-      continue;
-    }
+        if (!netOnline() || !config.mqttServer[0] || config.mqttOff)
+        {
+            if (client.connected())
+            {
+                // the link or the settings are gone: release the socket
+                mqttNet->stop();
+            }
 
-    // A few short messages per pass: the values and the discovery still go between, and a long publish does not
-    // delay client.loop() beyond a keepalive.
-    for (int n = 0; n < 2; n++)
-    {
-      MqttJob job;
-      if (mqttJobs == nullptr || xQueueReceive(mqttJobs, &job, 0) != pdTRUE)
-        break;
-      MQTT_STAGE("publish message");
-      mqttPublishDirect(job.topic, job.payload, job.len, job.retained);
-      free(job.topic);
-      free(job.payload);
-    }
-    MQTT_STAGE("publish values");
-    mqttPublishPendingValues();
+            mqttConnectedCache = false;
+            mqttStateCache     = MQTT_DISCONNECTED;
+            mqttClearJobs();
+            mqttDropPendingValues();
+            ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(250));
+            continue;
+        }
 
-    if (discoveryDirty && !mqttWriteFailed)
-    {
-      discoveryDirty = false;
-      MQTT_STAGE("HA discovery");
-      publishHomeAssistantDeviceDiscovery();
-    }
+        if (mqttWriteFailed)
+        {
+            // not client.disconnect(): its DISCONNECT packet would wait 10s more
+            mqttWriteFailed = false;
 
-    MQTT_STAGE("idle");
-    ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(50));
-  }
+            if (client.connected())
+            {
+                mqttNet->stop();
+                mqttSerial.println("MQTT: the broker stopped taking data, reconnecting");
+                eventAddf("MQTT: the broker stopped taking data, reconnecting");
+            }
+
+            mqttConnectedCache = false;
+            mqttStateCache     = MQTT_CONNECTION_LOST;
+            mqttClearJobs();
+            mqttDropPendingValues();
+            continue;
+        }
+
+        if (!client.connected())
+        {
+            mqttConnectedCache = false;
+            mqttStateCache     = client.state();
+            unsigned long now  = millis();
+
+            if (mqttLastAttempt == 0 || now - mqttLastAttempt >= MQTT_RETRY_MS)
+            {
+                mqttLastAttempt = now;
+                MQTT_STAGE("MQTT connect");
+                mqttConnectOnce();             // may block: the task's whole point
+                mqttLastAttempt    = millis(); // a failed attempt is followed by a real 5 s gap
+                mqttConnectedCache = client.connected();
+                mqttStateCache     = client.state();
+            }
+
+            ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(100));
+            continue;
+        }
+
+        mqttConnectedCache = true;
+        mqttStateCache     = MQTT_CONNECTED;
+        MQTT_STAGE("MQTT receive");
+        client.loop(); // keepalive and incoming commands; callbacks run in this task
+
+        if (!client.connected())
+        {
+            mqttConnectedCache = false;
+            mqttStateCache     = client.state();
+            mqttClearJobs();
+            mqttDropPendingValues();
+            continue;
+        }
+
+        // A few short messages per pass: the values and the discovery still go between, and a long publish does not
+        // delay client.loop() beyond a keepalive.
+        for (int n = 0; n < 2; n++)
+        {
+            MqttJob job;
+            if (mqttJobs == nullptr || xQueueReceive(mqttJobs, &job, 0) != pdTRUE)
+            {
+                break;
+            }
+            MQTT_STAGE("publish message");
+            mqttPublishDirect(job.topic, job.payload, job.len, job.retained);
+            free(job.topic);
+            free(job.payload);
+        }
+
+        MQTT_STAGE("publish values");
+        mqttPublishPendingValues();
+
+        if (discoveryDirty && !mqttWriteFailed)
+        {
+            discoveryDirty = false;
+            MQTT_STAGE("HA discovery");
+            publishHomeAssistantDeviceDiscovery();
+        }
+
+        MQTT_STAGE("idle");
+        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(50));
+    }
 }
 
 // Starts the MQTT task. After this, every client call belongs to it: the main loop only queues a message and reads
 // mqttConnectedCache/mqttStateCache.
 void mqttTaskBegin()
 {
-  mqttJobs = xQueueCreate(64, sizeof(MqttJob)); // one poll in one-topic mode, plus the log and the controls
-  mqttValuesMutex = xSemaphoreCreateMutex();
-  mqttTopicsMutex = xSemaphoreCreateMutex();
-  if (mqttJobs == nullptr || mqttValuesMutex == nullptr || mqttTopicsMutex == nullptr)
-  {
-    mqttSerial.println("MQTT task not started: out of memory");
-    return;
-  }
-  // Lowest priority: the heat pump task and the main loop always go first. A blocking connect or publish then
-  // runs in the time they leave, never the other way around.
-  if (xTaskCreate(mqttTask, "mqtt", 8192, nullptr, 0, &mqttTaskHandle) != pdPASS)
-  {
-    mqttTaskHandle = nullptr;
-    mqttSerial.println("MQTT task not started: out of memory");
-    return;
-  }
-  mqttSerial.println("MQTT task started");
+    mqttJobs        = xQueueCreate(64, sizeof(MqttJob)); // one poll in one-topic mode, plus the log and the controls
+    mqttValuesMutex = xSemaphoreCreateMutex();
+    mqttTopicsMutex = xSemaphoreCreateMutex();
+
+    if (mqttJobs == nullptr || mqttValuesMutex == nullptr || mqttTopicsMutex == nullptr)
+    {
+        mqttSerial.println("MQTT task not started: out of memory");
+        return;
+    }
+
+    // Lowest priority: the heat pump task and the main loop always go first. A blocking connect or publish then
+    // runs in the time they leave, never the other way around.
+    if (xTaskCreate(mqttTask, "mqtt", 8192, nullptr, 0, &mqttTaskHandle) != pdPASS)
+    {
+        mqttTaskHandle = nullptr;
+        mqttSerial.println("MQTT task not started: out of memory");
+        return;
+    }
+
+    mqttSerial.println("MQTT task started");
 }
